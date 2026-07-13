@@ -50,11 +50,11 @@ class TicketResponse(BaseModel):
 
 
 class TicketDetailResponse(TicketResponse):
-    queue_id: str
+    queue_id: str | None = None
 
 
 class TicketComplexityUpdate(BaseModel):
-    complexity: int = Field(..., gt=0)
+    complexity: int = Field(..., ge=0)
 
 
 # --- Queue full view ---
