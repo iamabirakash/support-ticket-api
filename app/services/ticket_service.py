@@ -1,9 +1,16 @@
-import time
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Ticket, Queue
+from app.models import Queue, Ticket
 from app.schemas import TicketBulkEntry, TicketCreate, TicketCreateStandalone
+
+
+def _ensure_queue_capacity(queue: Queue, quantity: int) -> None:
+    new_total = queue.current_ticket_count + quantity
+    if new_total > queue.capacity:
+        raise ValueError("capacity_exceeded")
+    if settings.MAX_TICKETS_PER_QUEUE is not None and new_total > settings.MAX_TICKETS_PER_QUEUE:
+        raise ValueError("capacity_exceeded")
 
 
 def create_ticket(db: Session, data: TicketCreateStandalone) -> Ticket:
@@ -11,11 +18,7 @@ def create_ticket(db: Session, data: TicketCreateStandalone) -> Ticket:
         queue = db.query(Queue).filter(Queue.id == data.queue_id).first()
         if not queue:
             raise ValueError("queue_not_found")
-        if queue.current_ticket_count + data.quantity > queue.capacity:
-            raise ValueError("capacity_exceeded")
-        if queue.current_ticket_count + data.quantity < settings.MAX_TICKETS_PER_QUEUE:
-            raise ValueError("capacity_exceeded")
-        
+        _ensure_queue_capacity(queue, data.quantity)
         ticket = Ticket(
             title=data.title,
             complexity=data.complexity,
@@ -32,7 +35,7 @@ def create_ticket(db: Session, data: TicketCreateStandalone) -> Ticket:
             quantity=data.quantity,
         )
         db.add(ticket)
-    
+
     db.commit()
     db.refresh(ticket)
     return ticket
@@ -42,10 +45,7 @@ def add_ticket_to_queue(db: Session, queue_id: str, data: TicketCreate) -> Ticke
     queue = db.query(Queue).filter(Queue.id == queue_id).first()
     if not queue:
         raise ValueError("queue_not_found")
-    if queue.current_ticket_count + data.quantity > queue.capacity:
-        raise ValueError("capacity_exceeded")
-    if queue.current_ticket_count + data.quantity < settings.MAX_TICKETS_PER_QUEUE:
-        raise ValueError("capacity_exceeded")
+    _ensure_queue_capacity(queue, data.quantity)
     ticket = Ticket(
         title=data.title,
         complexity=data.complexity,
@@ -63,16 +63,20 @@ def bulk_add_tickets(db: Session, queue_id: str, entries: list[TicketBulkEntry])
     queue = db.query(Queue).filter(Queue.id == queue_id).first()
     if not queue:
         raise ValueError("queue_not_found")
-    added = 0
-    for e in entries:
-        if e.quantity <= 0:
-            continue
-        ticket = Ticket(title=e.title, complexity=e.complexity, queue_id=queue_id, quantity=e.quantity)
+    total_quantity = sum(entry.quantity for entry in entries)
+    _ensure_queue_capacity(queue, total_quantity)
+
+    for entry in entries:
+        ticket = Ticket(
+            title=entry.title,
+            complexity=entry.complexity,
+            queue_id=queue_id,
+            quantity=entry.quantity,
+        )
         db.add(ticket)
-        added += 1
-        db.commit()
-        time.sleep(0.05)  # demo: widens race window vs resolve
-    return added
+        queue.current_ticket_count += entry.quantity
+    db.commit()
+    return len(entries)
 
 
 def list_tickets_by_queue(db: Session, queue_id: str) -> list[Ticket]:
@@ -90,9 +94,7 @@ def update_ticket_complexity(db: Session, ticket_id: str, complexity: int) -> No
     ticket = get_ticket_by_id(db, ticket_id)
     if not ticket:
         raise ValueError("ticket_not_found")
-    prev_updated = ticket.updated_at
     ticket.complexity = complexity
-    ticket.updated_at = prev_updated
     db.commit()
 
 
@@ -123,7 +125,7 @@ def bulk_remove_tickets(
     queue = db.query(Queue).filter(Queue.id == queue_id).first()
     if not queue:
         raise ValueError("queue_not_found")
-    if ticket_ids is not None and len(ticket_ids) > 0:
+    if ticket_ids is not None:
         tickets = db.query(Ticket).filter(
             Ticket.queue_id == queue_id,
             Ticket.id.in_(ticket_ids),
