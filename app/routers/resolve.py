@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -20,18 +21,19 @@ def resolve_ticket(data: ResolveRequest, db: Session = Depends(get_db)):
         result = resolve_service.resolve(db, data.ticket_id, data.effort_logged)
         return ResolveResponse(**result)
     except ValueError as e:
-        if str(e) == "ticket_not_found":
+        code = e.args[0] if e.args else str(e)
+        if code == "ticket_not_found":
             raise HTTPException(status_code=404, detail="Ticket not found")
-        if str(e) == "out_of_stock":
-            raise HTTPException(
+        if code == "out_of_stock":
+            return JSONResponse(
                 status_code=400,
-                detail=OutOfStockError().model_dump(),
+                content=OutOfStockError().model_dump(),
             )
-        if str(e) == "insufficient_effort":
+        if code == "insufficient_effort":
             required, logged = e.args[1], e.args[2]
-            raise HTTPException(
+            return JSONResponse(
                 status_code=400,
-                detail=InsufficientEffortError(
+                content=InsufficientEffortError(
                     required=required, logged=logged
                 ).model_dump(),
             )
